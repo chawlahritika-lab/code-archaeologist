@@ -132,28 +132,21 @@ for item in project_path.rglob("*.py"):
                 dependency_report[category][file_name].append(dependency)
 
         def classify_import(module_name):
-
+            
             if not module_name:
                 return "unresolved", None
 
-            # Check exact local module
+            # Check whether the exact local module exists
             if module_name in module_to_file:
                 return "local", module_to_file[module_name]
 
-            # Check whether a parent package is local
-            parts = module_name.split(".")
+            root_module = module_name.split(".")[0]
 
-            for i in range(len(parts) - 1, 0, -1):
-                parent = ".".join(parts[:i])
-
-                if parent in module_to_file:
-                    return "local", module_to_file[parent]
-
-            root_module = parts[0]
-
+            # Check standard library
             if root_module in standard_library:
                 return "standard_library", module_name
 
+            # Check installed external packages
             if root_module in third_party_packages:
                 return "external", module_name
 
@@ -214,16 +207,45 @@ for item in project_path.rglob("*.py"):
 
                     elif category == "unresolved":
 
-                        # The imported name may be exported by the package
-                        package_category, package_dependency = classify_import(
-                            base_module
-                        )
+                        target_file = module_to_file.get(base_module)
+                        available_names = set()
 
-                        if package_category == "local":
-                            add_dependency(package_category, package_dependency)
+                        if target_file:
+                            target_path = project_path / target_file
+
+                            try:
+                                with open(target_path, "r", encoding="utf-8") as source:
+                                    target_tree = ast.parse(source.read())
+
+                                for target_node in ast.walk(target_tree):
+
+                                    if isinstance(target_node, (
+                                        ast.FunctionDef,
+                                        ast.AsyncFunctionDef,
+                                        ast.ClassDef
+                                    )):
+                                        available_names.add(target_node.name)
+
+                                    elif isinstance(target_node, ast.Import):
+                                        for target_alias in target_node.names:
+                                            available_names.add(
+                                                target_alias.asname or target_alias.name.split(".")[0]
+                                            )
+
+                                    elif isinstance(target_node, ast.ImportFrom):
+                                        for target_alias in target_node.names:
+                                            available_names.add(
+                                                target_alias.asname or target_alias.name
+                                            )
+
+                            except (SyntaxError, UnicodeDecodeError):
+                                pass
+
+                        if alias.name in available_names:
+                            add_dependency("local", target_file)
 
                         else:
-                            add_dependency(category, dependency)
+                            add_dependency("unresolved", imported_module)
 
                     else:
                         add_dependency(category, dependency)
